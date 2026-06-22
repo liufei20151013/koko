@@ -47,7 +47,7 @@ func createHuaweiH3CSuccessPattern(username string) string {
 
 const (
 	normalUserMark = "\\s*\\$"
-	superUserMark  = "\\s*#"
+	superUserMark = "\\s*(->|#)"
 )
 
 const (
