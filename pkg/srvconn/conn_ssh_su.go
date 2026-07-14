@@ -4,25 +4,40 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/jumpserver/koko/pkg/logger"
 )
 
 func LoginToSSHSu(sc *SSHConnection) error {
 	cfg := sc.options.suConfig
+	logger.Infof("Su: Starting SSH switch user, method=%s, targetUser=%s",
+		cfg.MethodType, cfg.SudoUsername)
 	suService, err := NewSuService(cfg, sc)
 	if err != nil {
+		logger.Errorf("Su: Failed to create SuService: %s", err)
 		return err
 	}
 	switch cfg.MethodType {
 	case SuMethodSu, SuMethodSudo,
 		SuMethodOnlySudo, SuMethodOnlySu:
 		startCmd := cfg.SuCommand()
+		logger.Infof("Su: Executing switch command via SSH session.Start: %s", startCmd)
 		suService.execCommand = func() {
 			_ = sc.session.Start(startCmd)
 		}
 	default:
+		logger.Infof("Su: Non-Linux method type %s, starting shell directly", cfg.MethodType)
 		_ = sc.session.Shell()
 	}
-	return suService.RunSwitchUser()
+	err = suService.RunSwitchUser()
+	if err != nil {
+		logger.Errorf("Su: Switch user failed for targetUser=%s, method=%s, err=%s",
+			cfg.SudoUsername, cfg.MethodType, err)
+	} else {
+		logger.Infof("Su: Switch user succeeded for targetUser=%s, method=%s",
+			cfg.SudoUsername, cfg.MethodType)
+	}
+	return err
 }
 
 type ExecuteResult struct {

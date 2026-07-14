@@ -12,11 +12,22 @@ import (
 
 func LoginToTelnetSu(sc *TelnetConnection) error {
 	cfg := sc.cfg.suCfg
+	logger.Infof("Su: Starting Telnet switch user, method=%s, targetUser=%s",
+		cfg.MethodType, cfg.SudoUsername)
 	suService, err := NewSuService(cfg, sc)
 	if err != nil {
+		logger.Errorf("Su: Failed to create Telnet SuService: %s", err)
 		return err
 	}
-	return suService.RunSwitchUser()
+	err = suService.RunSwitchUser()
+	if err != nil {
+		logger.Errorf("Su: Telnet switch user failed for targetUser=%s, method=%s, err=%s",
+			cfg.SudoUsername, cfg.MethodType, err)
+	} else {
+		logger.Infof("Su: Telnet switch user succeeded for targetUser=%s, method=%s",
+			cfg.SudoUsername, cfg.MethodType)
+	}
+	return err
 }
 
 /*
@@ -52,21 +63,32 @@ Linux 和 Cisco 交换机的成功提示符中，包含
 */
 
 func NewSuService(cfg *SuConfig, srv io.ReadWriteCloser) (*SuSwitchService, error) {
+	logger.Infof("Su: Creating SuSwitchService, method=%s, targetUser=%s, suCommand=%s",
+		cfg.MethodType, cfg.SudoUsername, cfg.SuCommand())
+	logger.Infof("Su: Success pattern: %s", cfg.SuccessPattern())
+	logger.Infof("Su: Password pattern: %s", cfg.PasswordMatchPattern())
+	logger.Infof("Su: Username pattern: %s", cfg.UsernameMatchPattern())
+
 	successReg, err := regexp.Compile(cfg.SuccessPattern())
 	if err != nil {
+		logger.Errorf("Su: Success pattern compile failed: %s, err=%s", cfg.SuccessPattern(), err)
 		return nil, fmt.Errorf("success pattern %s compile failed: %s", cfg.SuccessPattern(), err)
 	}
 	passwordReg, err := regexp.Compile(cfg.PasswordMatchPattern())
 	if err != nil {
+		logger.Errorf("Su: Password pattern compile failed: %s, err=%s", cfg.PasswordMatchPattern(), err)
 		return nil, fmt.Errorf("password pattern %s compile failed: %s", cfg.PasswordMatchPattern(), err)
 	}
 	usernameReg, err := regexp.Compile(cfg.UsernameMatchPattern())
 	if err != nil {
+		logger.Errorf("Su: Username pattern compile failed: %s, err=%s", cfg.UsernameMatchPattern(), err)
 		return nil, fmt.Errorf("username pattern %s compile failed: %s", cfg.UsernameMatchPattern(), err)
 	}
 	failedPattern := createFailedPattern()
+	logger.Infof("Su: Failure pattern: %s", failedPattern)
 	failedReg, err := regexp.Compile(failedPattern)
 	if err != nil {
+		logger.Errorf("Su: Failure pattern compile failed: %s, err=%s", failedPattern, err)
 		return nil, fmt.Errorf("failed pattern %s compile failed: %s", failedPattern, err)
 	}
 	suService := SuSwitchService{
@@ -77,6 +99,7 @@ func NewSuService(cfg *SuConfig, srv io.ReadWriteCloser) (*SuSwitchService, erro
 		passwordRegexp: passwordReg,
 		failureRegexp:  failedReg,
 	}
+	logger.Infof("Su: SuSwitchService created successfully")
 	return &suService, nil
 }
 
@@ -96,6 +119,7 @@ type SuSwitchService struct {
 }
 
 func (s *SuSwitchService) RunSwitchUser() error {
+	logger.Infof("Su: RunSwitchUser starting, targetUser=%s, method=%s", s.cfg.SudoUsername, s.cfg.MethodType)
 	s.runSwitchCommand()
 	resultChan := make(chan error, 1)
 	go s.loginUsernameOrPassword(resultChan)
@@ -103,17 +127,26 @@ func (s *SuSwitchService) RunSwitchUser() error {
 	defer ticker.Stop()
 	select {
 	case ret := <-resultChan:
+		if ret != nil {
+			logger.Errorf("Su: RunSwitchUser failed: %s", ret)
+		} else {
+			logger.Infof("Su: RunSwitchUser succeeded")
+		}
 		return ret
 	case <-ticker.C:
+		logger.Errorf("Su: RunSwitchUser timeout after 30s, targetUser=%s, method=%s",
+			s.cfg.SudoUsername, s.cfg.MethodType)
 	}
 	return ErrorTimeout
 }
 
 func (s *SuSwitchService) runSwitchCommand() {
 	if s.execCommand != nil {
+		logger.Infof("Su: Running switch command via execCommand callback")
 		s.execCommand()
 	} else {
 		cmd := s.cfg.SuCommand()
+		logger.Infof("Su: Sending switch command directly: %s", cmd)
 		_, _ = s.SrvConn.Write([]byte(cmd + "\r"))
 		s.needAuthOnce = true
 	}
@@ -122,34 +155,48 @@ func (s *SuSwitchService) runSwitchCommand() {
 func (s *SuSwitchService) loginUsernameOrPassword(resultChan chan<- error) {
 	buf := make([]byte, 8192)
 	var recStr bytes.Buffer
+	loopCount := 0
 	for {
 		nr, err2 := s.SrvConn.Read(buf)
 		if err2 != nil {
+			logger.Errorf("Su: Read from server failed, loopCount=%d, err=%s, receivedSoFar=%s",
+				loopCount, err2, truncateForLog(recStr.String(), 500))
 			resultChan <- err2
 			return
 		}
 		recStr.Write(buf[:nr])
+		loopCount++
+		logger.Infof("Su: Read cycle #%d, bytes=%d, totalBuffer=%d, data=%s",
+			loopCount, nr, recStr.Len(), truncateForLog(string(buf[:nr]), 200))
 		status := s.handleResult(recStr.Bytes())
 		switch status {
 		case StatusSuccess:
-			// 成功后，结束切换
+			logger.Infof("Su: StatusSuccess - switch user completed, loopCount=%d", loopCount)
 			resultChan <- nil
 			return
 		case StatusMatch:
-			// 匹配到了，清空缓存
 			recStr.Reset()
-			logger.Debug("Sudo step result matched and rest")
+			logger.Infof("Su: StatusMatch - pattern matched, buffer reset, loopCount=%d", loopCount)
 			continue
 		case StatusFailed:
+			errMsg := fmt.Sprintf("failed login: %s", truncateForLog(recStr.String(), 500))
+			logger.Errorf("Su: StatusFailed - %s, loopCount=%d", errMsg, loopCount)
 			resultChan <- fmt.Errorf("failed login: %s", recStr.String())
+			return
 		case StatusUnMatch:
 		default:
-
 		}
-		logger.Debugf("Sudo step result do not match any: %s", recStr.String())
-		// 没有匹配到，继续等待
+		logger.Debugf("Su: StatusUnMatch - no pattern matched yet, loopCount=%d, buffer=%s",
+			loopCount, truncateForLog(recStr.String(), 200))
 		time.Sleep(time.Millisecond * 100)
 	}
+}
+
+func truncateForLog(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "...(truncated)"
 }
 
 func (s *SuSwitchService) handleResult(p []byte) matchStatus {
@@ -157,11 +204,14 @@ func (s *SuSwitchService) handleResult(p []byte) matchStatus {
 	newBytes = bytes.ReplaceAll(newBytes, []byte("\n\n"), []byte("\n"))
 	lineBytes := bytes.Split(newBytes, []byte("\n"))
 
+	rawPreview := truncateForLog(string(p), 300)
+
 	if s.usernameRegexp != nil && s.usernameRegexp.Match(p) {
 		for _, line := range lineBytes {
 			if s.usernameRegexp.Match(line) {
+				logger.Infof("Su: Username prompt matched, sending username=%s, matchedLine=%s",
+					s.cfg.SudoUsername, string(line))
 				_, _ = s.SrvConn.Write([]byte(s.cfg.SudoUsername + "\r"))
-				logger.Debugf("Su switch step username pattern ok: %s", p)
 				return StatusMatch
 			}
 		}
@@ -169,9 +219,10 @@ func (s *SuSwitchService) handleResult(p []byte) matchStatus {
 	if s.passwordRegexp != nil {
 		for _, line := range lineBytes {
 			if s.passwordRegexp.Match(line) {
+				logger.Infof("Su: Password prompt matched, sending password (len=%d), matchedLine=%s",
+					len(s.cfg.SudoPassword), string(line))
 				_, _ = s.SrvConn.Write([]byte(s.cfg.SudoPassword + "\r"))
 				s.inputAuthOnce = true
-				logger.Debugf("Su switch step password pattern ok: %s", p)
 				return StatusMatch
 			}
 		}
@@ -180,7 +231,8 @@ func (s *SuSwitchService) handleResult(p []byte) matchStatus {
 		if s.failureRegexp != nil {
 			for _, line := range lineBytes {
 				if s.failureRegexp.Match(line) {
-					logger.Debugf("Su switch step failed pattern ok: %s", p)
+					logger.Errorf("Su: Failure pattern matched, line=%s, fullOutput=%s",
+						string(line), rawPreview)
 					return StatusFailed
 				}
 			}
@@ -188,14 +240,24 @@ func (s *SuSwitchService) handleResult(p []byte) matchStatus {
 	}
 	if s.successRegexp != nil {
 		if s.needAuthOnce && !s.inputAuthOnce {
-			logger.Debug("Su switch step need auth once but not input password")
+			logger.Infof("Su: Success check skipped - needAuthOnce=true but no auth sent yet, needAuthOnce=%v, inputAuthOnce=%v",
+				s.needAuthOnce, s.inputAuthOnce)
 			return StatusUnMatch
 		}
 		for _, line := range lineBytes {
 			if s.successRegexp.Match(line) {
-				logger.Debugf("Su switch step success pattern ok: %s", p)
+				logger.Infof("Su: Success pattern matched, line=%s, fullOutput=%s",
+					string(line), rawPreview)
 				return StatusSuccess
 			}
+		}
+	}
+	// 输出未匹配详情（每条line）
+	logger.Debugf("Su: No pattern matched, needAuthOnce=%v, inputAuthOnce=%v, lines=%d, preview=%s",
+		s.needAuthOnce, s.inputAuthOnce, len(lineBytes), rawPreview)
+	for i, line := range lineBytes {
+		if len(line) > 0 {
+			logger.Debugf("Su:   line[%d]=%s", i, string(line))
 		}
 	}
 	return StatusUnMatch

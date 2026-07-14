@@ -8,6 +8,7 @@ import (
 	"golang.org/x/text/transform"
 
 	"github.com/jumpserver/koko/pkg/common"
+	"github.com/jumpserver/koko/pkg/logger"
 )
 
 func NewSSHConnection(sess *gossh.Session, opts ...SSHOption) (*SSHConnection, error) {
@@ -57,11 +58,15 @@ func NewSSHConnection(sess *gossh.Session, opts ...SSHOption) (*SSHConnection, e
 		options: options,
 	}
 	if options.suConfig == nil {
+		logger.Infof("SSH conn: no su config, starting normal shell")
 		err = sess.Shell()
 	} else {
+		logger.Infof("SSH conn: su config present, method=%s, targetUser=%s, starting switch user",
+			options.suConfig.MethodType, options.suConfig.SudoUsername)
 		err = LoginToSSHSu(conn)
 	}
 	if err != nil {
+		logger.Errorf("SSH conn: session start failed: %s", err)
 		_ = sess.Close()
 		return nil, err
 	}
