@@ -123,10 +123,24 @@ func (s *Server) NewSftpHandler(user *model.User, addr string) *SftpHandler {
 
 func (s *Server) LocalPortForwardingPermission(ctx ssh.Context, dstHost string, dstPort uint32) bool {
 	logger.Debugf("LocalPortForwardingPermission: %s %s %d", ctx.User(), dstHost, dstPort)
+	// Endpoint 网关模式：Token 认证连接允许 direct-tcpip 转发
+	if directReq, ok := ctx.Value(auth.ContextKeyDirectLoginFormat).(*auth.DirectLoginAssetReq); ok {
+		if directReq.IsToken() {
+			return true
+		}
+	}
 	return config.GlobalConfig.EnableLocalPortForward
 }
 
 func (s *Server) DirectTCPIPChannelHandler(ctx ssh.Context, newChan gossh.NewChannel, destAddr string) {
+	// Token 认证的连接（Endpoint 网关模式）：直接做 TCP 转发，
+	// 不依赖 VSCode 集成，用于 koko 之间的网关隧道
+	directReq, hasToken := ctx.Value(auth.ContextKeyDirectLoginFormat).(*auth.DirectLoginAssetReq)
+	if hasToken && directReq.IsToken() {
+		s.gatewayDirectTCPIPHandler(newChan, destAddr)
+		return
+	}
+
 	if !config.GetConf().EnableVscodeSupport {
 		_ = newChan.Reject(gossh.Prohibited, "port forwarding is disabled")
 		return
@@ -165,6 +179,32 @@ func (s *Server) DirectTCPIPChannelHandler(ctx ssh.Context, newChan gossh.NewCha
 	_, _ = io.Copy(dConn, ch)
 	logger.Infof("User %s end port forwarding from (%s) to (%s)", vsReq.user,
 		vsReq.client, destAddr)
+}
+
+// gatewayDirectTCPIPHandler 处理 Endpoint 网关模式下的 direct-tcpip 通道，
+// 直接建立 TCP 连接到目标地址并双向转发数据。
+func (s *Server) gatewayDirectTCPIPHandler(newChan gossh.NewChannel, destAddr string) {
+	dConn, err := net.DialTimeout("tcp", destAddr, 15*time.Second)
+	if err != nil {
+		_ = newChan.Reject(gossh.ConnectionFailed, err.Error())
+		return
+	}
+	defer dConn.Close()
+	ch, reqs, err := newChan.Accept()
+	if err != nil {
+		_ = dConn.Close()
+		return
+	}
+	defer ch.Close()
+	logger.Infof("Gateway direct-tcpip forwarding to %s", destAddr)
+	go gossh.DiscardRequests(reqs)
+	go func() {
+		defer ch.Close()
+		defer dConn.Close()
+		_, _ = io.Copy(ch, dConn)
+	}()
+	_, _ = io.Copy(dConn, ch)
+	logger.Infof("Gateway direct-tcpip forwarding to %s done", destAddr)
 }
 
 func (s *Server) SessionHandler(sess ssh.Session) {
