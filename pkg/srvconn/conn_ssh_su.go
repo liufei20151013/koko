@@ -62,13 +62,13 @@ const (
 		Linux 相关
 	*/
 
-	LinuxSuCommand = "su - %s; exit"
+	LinuxSuCommand = "export LC_ALL=en_US.UTF-8; su - %s; exit"
 
-	LinuxSudoCommand = "sudo su - %s; exit"
+	LinuxSudoCommand = "export LC_ALL=en_US.UTF-8; sudo su - %s; exit"
 
-	LinuxOnlySuCommand = "su %s; exit"
+	LinuxOnlySuCommand = "export LC_ALL=en_US.UTF-8; su %s; exit"
 
-	LinuxOnlySudoCommand = "sudo su %s; exit"
+	LinuxOnlySudoCommand = "export LC_ALL=en_US.UTF-8; sudo su %s; exit"
 
 	/*
 		Cisco 相关
