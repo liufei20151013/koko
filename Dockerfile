@@ -39,7 +39,7 @@ ARG DEPENDENCIES="                    \
         redis-tools                   \
         ca-certificates"
 
-ARG APT_MIRROR=http://deb.debian.org
+ARG APT_MIRROR=http://mirrors.aliyun.com
 
 RUN set -ex \
     && sed -i "s@http://.*.debian.org@${APT_MIRROR}@g" /etc/apt/sources.list.d/debian.sources \
