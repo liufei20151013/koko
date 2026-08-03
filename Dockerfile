@@ -1,4 +1,4 @@
-FROM jumpserver/koko-base:20251229_100745 AS stage-build
+FROM jumpserver/koko-base:20260422_103200 AS stage-build
 
 WORKDIR /opt/koko
 ARG TARGETARCH
@@ -39,7 +39,7 @@ ARG DEPENDENCIES="                    \
         redis-tools                   \
         ca-certificates"
 
-ARG APT_MIRROR=http://deb.debian.org
+ARG APT_MIRROR=https://mirrors.ustc.edu.cn
 
 RUN set -ex \
     && sed -i "s@http://.*.debian.org@${APT_MIRROR}@g" /etc/apt/sources.list.d/debian.sources \

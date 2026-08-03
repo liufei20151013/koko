@@ -18,6 +18,7 @@ config.yml
 host_key
 cmd/logs
 cmd/kokodir
+cmd/koko
 build
 build/
 release
